@@ -10,7 +10,7 @@ export class OrderBook {
 
   constructor(public readonly symbol: string) {}
 
-  apply(event: MarketEvent): void {
+  apply(event: MarketEvent, consumed: string[] = []): void {
     this.lastTimestamp = event.timestamp;
     this.lastSequence = Math.max(this.lastSequence, event.sequence);
     if (event.type === 'snapshot') {
@@ -18,11 +18,11 @@ export class OrderBook {
       for (const level of event.bids ?? []) this.seedLevel('buy', level, event.sequence);
       for (const level of event.asks ?? []) this.seedLevel('sell', level, event.sequence);
     } else if (event.type === 'new_order' && event.orderId && event.side && event.price && event.quantity) {
-      this.execute({ id: event.orderId, side: event.side, price: event.price, quantity: event.quantity, remaining: event.quantity, sequence: event.sequence, type: 'limit' }, event.timestamp);
+      this.execute({ id: event.orderId, side: event.side, price: event.price, quantity: event.quantity, remaining: event.quantity, sequence: event.sequence, type: 'limit' }, event.timestamp, consumed);
     } else if (event.type === 'cancel_order' && event.orderId) {
       this.cancel(event.orderId);
     } else if (event.type === 'trade' && event.price && event.quantity) {
-      this.consume(event.aggressorSide ?? 'buy', event.quantity);
+      this.consume(event.aggressorSide ?? 'buy', event.quantity, consumed);
       this.tradeCount += 1; this.tradedQuantity += event.quantity;
     }
   }
@@ -33,17 +33,17 @@ export class OrderBook {
     queue.push(order); levels.set(order.price, queue);
   }
 
-  cancel(orderId: string): boolean {
+  cancel(orderId: string, owner?: string): boolean {
     for (const levels of [this.bids, this.asks]) {
       for (const [price, queue] of levels) {
-        const index = queue.findIndex(order => order.id === orderId);
+        const index = queue.findIndex(order => order.id === orderId && (owner === undefined || order.owner === owner));
         if (index >= 0) { queue.splice(index, 1); if (!queue.length) levels.delete(price); return true; }
       }
     }
     return false;
   }
 
-  execute(order: BookOrder, timestamp: string): Fill[] {
+  execute(order: BookOrder, timestamp: string, consumed: string[] = []): Fill[] {
     const fills: Fill[] = [];
     let remaining = order.remaining;
     const opposite = order.side === 'buy' ? this.asks : this.bids;
@@ -56,7 +56,7 @@ export class OrderBook {
         const quantity = Math.min(remaining, resting.remaining);
         resting.remaining -= quantity; remaining -= quantity;
         fills.push({ orderId: order.id, symbol: this.symbol, side: order.side, price, quantity, timestamp, liquidity: 'taker', fee: +(price * quantity * 0.00025).toFixed(4), strategyId: order.owner });
-        if (resting.remaining <= 0) queue.shift();
+        if (resting.remaining <= 0) { consumed.push(resting.id); queue.shift(); }
       }
       if (!queue.length) opposite.delete(price);
       if (remaining <= 0) break;
@@ -66,13 +66,13 @@ export class OrderBook {
     return fills;
   }
 
-  consume(aggressor: Side, quantity: number): void {
+  consume(aggressor: Side, quantity: number, consumed: string[] = []): void {
     const levels = aggressor === 'buy' ? this.asks : this.bids;
     let remaining = quantity;
     const prices = [...levels.keys()].sort((a, b) => aggressor === 'buy' ? a - b : b - a);
     for (const price of prices) {
       const queue = levels.get(price) ?? [];
-      while (queue.length && remaining > 0) { const item = queue[0]; const used = Math.min(remaining, item.remaining); item.remaining -= used; remaining -= used; if (item.remaining <= 0) queue.shift(); }
+      while (queue.length && remaining > 0) { const item = queue[0]; const used = Math.min(remaining, item.remaining); item.remaining -= used; remaining -= used; if (item.remaining <= 0) { consumed.push(item.id); queue.shift(); } }
       if (!queue.length) levels.delete(price); if (remaining <= 0) break;
     }
   }

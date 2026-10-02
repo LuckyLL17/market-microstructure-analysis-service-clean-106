@@ -33,10 +33,20 @@ export class OrderBook {
     queue.push(order); levels.set(order.price, queue);
   }
 
-  cancel(orderId: string): boolean {
+  findOrder(orderId: string): BookOrder | undefined {
+    for (const levels of [this.bids, this.asks]) {
+      for (const queue of levels.values()) {
+        const order = queue.find(item => item.id === orderId);
+        if (order) return order;
+      }
+    }
+    return undefined;
+  }
+
+  cancel(orderId: string, owner?: string): boolean {
     for (const levels of [this.bids, this.asks]) {
       for (const [price, queue] of levels) {
-        const index = queue.findIndex(order => order.id === orderId);
+        const index = queue.findIndex(order => order.id === orderId && (owner === undefined || order.owner === owner));
         if (index >= 0) { queue.splice(index, 1); if (!queue.length) levels.delete(price); return true; }
       }
     }
